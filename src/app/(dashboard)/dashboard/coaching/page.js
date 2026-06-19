@@ -14,10 +14,12 @@ export default function CoachingPage() {
     if (model) qs.set("model", model);
     if (minScore) qs.set("minScore", minScore);
     const res = await fetch(`/api/coaching/samples?${qs}`);
+    if (!res.ok) return;
     setData(await res.json());
   };
 
-  useEffect(() => { load(1); /* eslint-disable-next-line */ }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(1); }, []);
 
   const exportUrl = () => {
     const qs = new URLSearchParams({ format });
