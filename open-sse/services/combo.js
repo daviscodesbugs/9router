@@ -623,3 +623,169 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   log.info("FUSION", `Judging ${answers.length} answers with ${judge}`);
   return handleSingleModel(judgeBody, judge);
 }
+
+// ---------------------------------------------------------------------------
+// Coach strategy: serve a local "student" model while a "teacher" model grades
+// it off the critical path and emits durable training data. Sibling of fusion.
+// ---------------------------------------------------------------------------
+
+const COACH_DEFAULTS = {
+  sampleRate: 1.0,            // fraction of requests to harvest (0..1)
+  teacherHardTimeoutMs: 90000,
+  // NOTE: spec also lists `maxConcurrentHarvests`. Enforcing a global concurrency
+  // semaphore is DEFERRED to a follow-up: v1 relies on `sampleRate` + the server's
+  // own request concurrency to bound teacher load. The field is accepted in config
+  // (forward-compatible) but not yet enforced. This is an intentional, documented gap.
+};
+
+// Pull assistant text out of either a non-streaming JSON Response or an SSE stream.
+// Best-effort: returns "" if nothing recoverable. Always operate on a clone so the
+// caller can still return/consume the original Response.
+export async function extractAnswerFromResponse(res) {
+  if (!res || typeof res.clone !== "function") return "";
+  let clone;
+  try { clone = res.clone(); } catch { return ""; }
+  const ctype = (clone.headers && typeof clone.headers.get === "function")
+    ? (clone.headers.get("content-type") || "") : "";
+  let bodyText = "";
+  try { bodyText = await clone.text(); } catch { return ""; }
+  if (!bodyText) return "";
+
+  if (ctype.includes("text/event-stream") || /^\s*data:/m.test(bodyText)) {
+    let acc = "";
+    for (const line of bodyText.split(/\r?\n/)) {
+      const m = line.match(/^data:\s?(.*)$/);
+      if (!m) continue;
+      const payload = m[1].trim();
+      if (!payload || payload === "[DONE]") continue;
+      let j; try { j = JSON.parse(payload); } catch { continue; }
+      const delta = j.choices?.[0]?.delta;
+      if (delta && typeof delta.content === "string") { acc += delta.content; continue; }
+      const piece = extractPanelText(j);
+      if (piece) acc += piece;
+    }
+    return acc;
+  }
+  try { return extractPanelText(JSON.parse(bodyText)); } catch { return ""; }
+}
+
+// Teacher directive: produce its own best answer AND grade the student, as strict JSON.
+export function buildCoachPrompt(studentAnswer) {
+  return [
+    "You are an expert TEACHER evaluating a smaller local model (the STUDENT).",
+    "First, independently write your own best answer to the user's most recent request.",
+    "Then grade the STUDENT's answer (shown below) against your own.",
+    "",
+    "=== STUDENT ANSWER ===",
+    studentAnswer || "(empty)",
+    "=== END STUDENT ANSWER ===",
+    "",
+    "Respond with STRICT JSON only — no prose, no markdown fences — matching exactly:",
+    '{"reference_answer":"<your own best answer>",' +
+      '"scores":{"correctness":0,"completeness":0,"style":0,"overall":0},' +
+      '"strengths":["..."],"weaknesses":["..."],"failure_modes":["..."],' +
+      '"suggested_system_prompt_additions":["..."],"suggested_template_changes":["..."],"notes":"..."}',
+    "All score fields are integers 0-10. Arrays may be empty. Output nothing but the JSON object.",
+  ].join("\n");
+}
+
+// Parse the teacher's critique JSON, tolerating fences / surrounding prose.
+export function parseCoachCritique(text) {
+  if (typeof text !== "string" || !text.trim()) return { critique: null, status: "parse_failed" };
+  const tryParse = (s) => { try { return JSON.parse(s); } catch { return null; } };
+  let obj = tryParse(text);
+  if (!obj) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) obj = tryParse(text.slice(start, end + 1));
+  }
+  if (!obj || typeof obj !== "object") return { critique: null, status: "parse_failed" };
+  return { critique: obj, status: "ok" };
+}
+
+function coachScore(critique) {
+  const o = critique?.scores?.overall;
+  return (typeof o === "number" && Number.isFinite(o)) ? o : null;
+}
+
+export async function handleCoachChat({
+  body, models, handleSingleModel, log, comboName,
+  studentModel, teacherModel, serveMode = "student", tuning, persistSample,
+}) {
+  const list = Array.isArray(models) ? models.filter(Boolean) : [];
+  const student = (studentModel && studentModel.trim()) || list[0];
+  if (!student) {
+    return new Response(JSON.stringify({ error: { message: "Coach combo has no student model" } }),
+      { status: 400, headers: { "Content-Type": "application/json" } });
+  }
+  const teacher = (teacherModel && teacherModel.trim()) || list.find((m) => m !== student) || "";
+  const cfg = { ...COACH_DEFAULTS, ...(tuning || {}) };
+
+  // No teacher → serve student, harvest nothing.
+  if (!teacher) {
+    log.info("COACH", `Combo "${comboName}" | student=${student} | no teacher → serve-only`);
+    return handleSingleModel(body, student);
+  }
+
+  const sampled = Math.random() < cfg.sampleRate;
+  log.info("COACH", `Combo "${comboName}" | student=${student} | teacher=${teacher} | serve=${serveMode} | harvest=${sampled}`);
+
+  // Body variant for off-path teacher/student probes: non-streaming, tools flattened.
+  const { tools, tool_choice, ...rest } = body;
+  const probeBody = { ...rest, stream: false };
+  if (Array.isArray(probeBody.messages)) probeBody.messages = flattenToolHistory(probeBody.messages);
+  else if (Array.isArray(probeBody.input)) probeBody.input = flattenToolHistory(probeBody.input);
+
+  // Run the teacher grading + persist. Always guarded; never throws to the caller.
+  const harvest = async (studentAnswer, servedBy) => {
+    if (!sampled || !persistSample) return;
+    const base = {
+      comboName, studentModel: student, teacherModel: teacher, servedBy,
+      prompt: { messages: body.messages, input: body.input, contents: body.contents },
+      studentAnswer: studentAnswer || "",
+    };
+    try {
+      const critiqueBody = appendUserTurn(probeBody, buildCoachPrompt(studentAnswer));
+      const tRes = await withTimeout(handleSingleModel(critiqueBody, teacher), cfg.teacherHardTimeoutMs);
+      if (!tRes || tRes.__timeout || tRes.__error || !tRes.ok) {
+        await persistSample({ ...base, referenceAnswer: "", critique: null, overallScore: null, status: "teacher_error" });
+        return;
+      }
+      const raw = await extractAnswerFromResponse(tRes);
+      const { critique, status } = parseCoachCritique(raw);
+      await persistSample({
+        ...base,
+        referenceAnswer: critique?.reference_answer || "",
+        critique: status === "ok" ? critique : { raw },
+        overallScore: coachScore(critique),
+        status,
+      });
+    } catch (e) {
+      log.warn("COACH", `Harvest failed for "${comboName}"`, { error: e?.message || String(e) });
+      try { await persistSample({ ...base, referenceAnswer: "", critique: null, overallScore: null, status: "teacher_error" }); } catch { /* ignore */ }
+    }
+  };
+
+  if (serveMode === "teacher") {
+    // Student answer is only needed for the critique → call it non-streaming.
+    let studentAnswer = "";
+    try {
+      const sRes = await handleSingleModel(probeBody, student);
+      studentAnswer = sRes && sRes.ok ? await extractAnswerFromResponse(sRes) : "";
+    } catch (e) {
+      log.warn("COACH", `Student call failed`, { error: e?.message || String(e) });
+    }
+    // Teacher answer is served to the client (honors original stream/tools).
+    const teacherRes = await handleSingleModel(body, teacher);
+    queueMicrotask(() => { harvest(studentAnswer, "teacher"); });
+    return teacherRes;
+  }
+
+  // serveMode === "student": serve the student now; grade off the critical path.
+  const studentRes = await handleSingleModel(body, student);
+  queueMicrotask(async () => {
+    const studentAnswer = await extractAnswerFromResponse(studentRes);
+    harvest(studentAnswer, "student");
+  });
+  return studentRes;
+}
