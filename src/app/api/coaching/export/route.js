@@ -22,7 +22,11 @@ export async function GET(request) {
   const filter = {};
   if (searchParams.get("model")) filter.studentModel = searchParams.get("model");
   if (searchParams.get("since")) filter.since = searchParams.get("since");
-  if (searchParams.get("minScore")) filter.minScore = parseInt(searchParams.get("minScore"), 10);
+  const minScoreRaw = searchParams.get("minScore");
+  if (minScoreRaw !== null && minScoreRaw !== "") {
+    const parsed = parseInt(minScoreRaw, 10);
+    if (!Number.isNaN(parsed)) filter.minScore = parsed;
+  }
   if (format === "raw") filter.includeAll = true;
 
   const records = await exportSamples(filter);
