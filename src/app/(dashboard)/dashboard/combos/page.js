@@ -292,13 +292,19 @@ const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
   { value: "fusion", label: "Fusion — panel + judge" },
+  { value: "coach", label: "Coach — bootstrap a local model" },
 ];
 
 function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
+  const [showStudentSelect, setShowStudentSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
   const isFusion = current === "fusion";
+  const isCoach = current === "coach";
+  const student = strategy.studentModel || "";
+  const serveMode = strategy.serveMode === "teacher" ? "teacher" : "student";
+  const sampleRate = strategy.coachTuning?.sampleRate ?? 1;
 
   return (
     <Card padding="sm" className="group">
@@ -347,6 +353,46 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
                 )}
               </div>
             )}
+            {isCoach && (
+              <div className="mt-2 flex min-w-0 flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-medium text-text-muted">Student</span>
+                  <button
+                    onClick={() => setShowStudentSelect(true)}
+                    className="inline-flex max-w-full items-center gap-1 rounded border border-dashed border-primary/40 px-1.5 py-0.5 font-mono text-[11px] text-primary hover:border-primary hover:bg-primary/5 transition-colors"
+                    title="The local model being bootstrapped"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">school</span>
+                    <span className="truncate">{student || `Auto — ${combo.models[0] || "first model"}`}</span>
+                  </button>
+                  <span className="ml-2 text-[11px] font-medium text-text-muted">Teacher</span>
+                  <button
+                    onClick={() => setShowJudgeSelect(true)}
+                    className="inline-flex max-w-full items-center gap-1 rounded border border-dashed border-primary/40 px-1.5 py-0.5 font-mono text-[11px] text-primary hover:border-primary hover:bg-primary/5 transition-colors"
+                    title="The stronger model that grades the student"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">gavel</span>
+                    <span className="truncate">{judge || "Auto — first non-student"}</span>
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-medium text-text-muted">Serve</span>
+                  <Select
+                    options={[{ value: "student", label: "Student (fast)" }, { value: "teacher", label: "Teacher (best now)" }]}
+                    value={serveMode}
+                    onChange={(e) => onSetStrategy({ serveMode: e.target.value })}
+                    selectClassName="py-1 text-[11px]"
+                  />
+                  <span className="ml-2 text-[11px] font-medium text-text-muted">Sample</span>
+                  <input
+                    type="number" min="0" max="1" step="0.1" value={sampleRate}
+                    onChange={(e) => onSetStrategy({ coachTuning: { ...(strategy.coachTuning || {}), sampleRate: Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)) } })}
+                    className="w-16 rounded border border-border bg-transparent px-1.5 py-0.5 font-mono text-[11px]"
+                    title="Fraction of requests harvested (0-1)"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -393,18 +439,25 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
         </div>
       </div>
 
-      {/* Judge model picker (single-select; combo members make natural judges too) */}
-      {showJudgeSelect && (
-        <ModelSelectModal
-          isOpen={showJudgeSelect}
-          onClose={() => setShowJudgeSelect(false)}
-          onSelect={(m) => { onSetStrategy({ judgeModel: m?.value || "" }); setShowJudgeSelect(false); }}
-          activeProviders={activeProviders}
-          title="Select Judge Model"
-          addedModelValues={judge ? [judge] : []}
-          closeOnSelect={true}
-        />
-      )}
+      {/* Coach reuses the judge picker as its teacher selector. */}
+      <ModelSelectModal
+        isOpen={showJudgeSelect}
+        onClose={() => setShowJudgeSelect(false)}
+        onSelect={(m) => { onSetStrategy({ judgeModel: m?.value || "" }); setShowJudgeSelect(false); }}
+        activeProviders={activeProviders}
+        title={isCoach ? "Select Teacher Model" : "Select Judge Model"}
+        addedModelValues={judge ? [judge] : []}
+        closeOnSelect={true}
+      />
+      <ModelSelectModal
+        isOpen={showStudentSelect}
+        onClose={() => setShowStudentSelect(false)}
+        onSelect={(m) => { onSetStrategy({ studentModel: m?.value || "" }); setShowStudentSelect(false); }}
+        activeProviders={activeProviders}
+        title="Select Student (local) Model"
+        addedModelValues={student ? [student] : []}
+        closeOnSelect={true}
+      />
     </Card>
   );
 }
