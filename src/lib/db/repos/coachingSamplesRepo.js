@@ -1,6 +1,10 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
+// aggregateWeaknesses scans up to this many recent samples in-memory; older
+// samples beyond this cap are not counted. Raise if datasets grow large.
+const AGGREGATE_SCAN_CAP = 10000;
+
 function genId(model) {
   const ts = new Date().toISOString();
   const rand = Math.random().toString(36).substring(2, 8);
@@ -97,7 +101,7 @@ export async function exportSamples(filter = {}) {
 }
 
 export async function aggregateWeaknesses({ studentModel, since } = {}) {
-  const { samples } = await listCoachingSamples({ studentModel, since, pageSize: 10000 });
+  const { samples } = await listCoachingSamples({ studentModel, since, pageSize: AGGREGATE_SCAN_CAP });
   const tally = new Map();
   for (const s of samples) {
     const ws = [...(s.critique?.weaknesses || []), ...(s.critique?.failure_modes || [])];

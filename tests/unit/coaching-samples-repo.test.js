@@ -23,14 +23,14 @@ const fakeDb = {
 };
 function filterRows(sql, params) {
   let rows = [...store.rows];
-  let paramIdx = 0;
-  if (/studentModel = \?/i.test(sql)) {
-    rows = rows.filter((r) => r.studentModel === params[paramIdx]);
-    paramIdx++;
-  }
-  if (/status = \?/i.test(sql)) {
-    rows = rows.filter((r) => r.status === params[paramIdx]);
-    paramIdx++;
+  const whereMatch = sql.match(/WHERE (.+?)(?:\s+ORDER|\s+LIMIT|$)/is);
+  if (whereMatch) {
+    const conditions = whereMatch[1].split(/\s+AND\s+/i);
+    conditions.forEach((cond, i) => {
+      if (/studentModel = \?/i.test(cond)) rows = rows.filter((r) => r.studentModel === params[i]);
+      if (/status = \?/i.test(cond)) rows = rows.filter((r) => r.status === params[i]);
+      if (/comboName = \?/i.test(cond)) rows = rows.filter((r) => r.comboName === params[i]);
+    });
   }
   return rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
@@ -64,5 +64,14 @@ describe("coachingSamplesRepo", () => {
     const ok = await exportSamples({});
     expect(ok).toHaveLength(1);
     expect(ok[0].status).toBe("ok");
+  });
+
+  it("listCoachingSamples returns paginated results", async () => {
+    await saveCoachingSample({ comboName: "c1", studentModel: "s1", servedBy: "student", prompt: {}, studentAnswer: "a1", referenceAnswer: "r1", critique: {}, overallScore: 5, status: "ok" });
+    await saveCoachingSample({ comboName: "c2", studentModel: "s2", servedBy: "student", prompt: {}, studentAnswer: "a2", referenceAnswer: "r2", critique: {}, overallScore: 6, status: "ok" });
+    const result = await listCoachingSamples({});
+    expect(result.samples).toHaveLength(2);
+    expect(result.pagination.totalItems).toBe(2);
+    expect(result.pagination.totalPages).toBe(1);
   });
 });
