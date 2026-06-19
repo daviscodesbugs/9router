@@ -770,8 +770,9 @@ export async function handleCoachChat({
     // Student answer is only needed for the critique → call it non-streaming.
     let studentAnswer = "";
     try {
-      const sRes = await handleSingleModel(probeBody, student);
-      studentAnswer = sRes && sRes.ok ? await extractAnswerFromResponse(sRes) : "";
+      const sRes = await withTimeout(handleSingleModel(probeBody, student), cfg.teacherHardTimeoutMs);
+      studentAnswer = (sRes && !sRes.__timeout && !sRes.__error && sRes.ok)
+        ? await extractAnswerFromResponse(sRes) : "";
     } catch (e) {
       log.warn("COACH", `Student call failed`, { error: e?.message || String(e) });
     }

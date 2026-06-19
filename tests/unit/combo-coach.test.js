@@ -104,6 +104,46 @@ describe("coach combo", () => {
     expect(persisted[0].status).toBe("teacher_error");
   });
 
+  it("serves the teacher answer and persists sample with servedBy=teacher (serveMode=teacher)", async () => {
+    const persisted = [];
+    const handleSingleModel = vi.fn(async (_b, _m) => critiqueResponse(CRITIQUE));
+    const res = await handleCoachChat({
+      body: { messages: [{ role: "user", content: "Q" }], stream: true },
+      models: ["spark1/student", "cc/teacher"],
+      handleSingleModel, log, comboName: "local-coach",
+      studentModel: "spark1/student", teacherModel: "cc/teacher", serveMode: "teacher",
+      persistSample: (r) => persisted.push(r),
+    });
+    // The served response should be the teacher's output.
+    expect(await extractAnswerFromResponse(res)).toBe(JSON.stringify(CRITIQUE));
+    // Allow the fire-and-forget harvest to settle.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].servedBy).toBe("teacher");
+    expect(persisted[0].referenceAnswer).toBe("the better answer");
+  });
+
+  it("serves teacher answer even when student probe throws (serveMode=teacher)", async () => {
+    const persisted = [];
+    const handleSingleModel = vi.fn(async (_b, m) => {
+      if (m === "spark1/student") throw new Error("student down");
+      return critiqueResponse(CRITIQUE);
+    });
+    const res = await handleCoachChat({
+      body: { messages: [{ role: "user", content: "Q" }] },
+      models: ["spark1/student", "cc/teacher"],
+      handleSingleModel, log, comboName: "local-coach",
+      studentModel: "spark1/student", teacherModel: "cc/teacher", serveMode: "teacher",
+      persistSample: (r) => persisted.push(r),
+    });
+    // Teacher answer still served.
+    expect(await extractAnswerFromResponse(res)).toBe(JSON.stringify(CRITIQUE));
+    // Harvest still persists a sample.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].servedBy).toBe("teacher");
+  });
+
   it("skips harvest entirely when no teacher is available", async () => {
     const persisted = [];
     const handleSingleModel = vi.fn(async () => okResponse("student says"));
