@@ -152,6 +152,25 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
     ],
   },
+  coachingSamples: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      comboName: "TEXT NOT NULL",
+      studentModel: "TEXT NOT NULL",
+      teacherModel: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      servedBy: "TEXT",
+      overallScore: "INTEGER",
+      status: "TEXT NOT NULL",
+      data: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cs_combo ON coachingSamples(comboName)",
+      "CREATE INDEX IF NOT EXISTS idx_cs_student ON coachingSamples(studentModel)",
+      "CREATE INDEX IF NOT EXISTS idx_cs_created ON coachingSamples(createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_cs_score ON coachingSamples(overallScore)",
+    ],
+  },
 };
 
 export function buildCreateTableSql(name, def) {
