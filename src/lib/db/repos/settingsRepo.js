@@ -17,6 +17,10 @@ const DEFAULT_SETTINGS = {
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
   comboStrategies: {},
+  // Opt-in: also fall over when a 2xx is an empty non-answer (e.g.
+  // finish_reason:"content_filter"). Buffers the body, so off by default
+  // (defeats live streaming); enable per-combo via comboStrategies[name].softFailover.
+  comboSoftFailover: false,
   capacityAdapter: {
     vision: { enabled: true, roundRobin: false, models: [] },
     pdf: { enabled: false, roundRobin: false, models: [] },
