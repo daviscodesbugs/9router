@@ -17,6 +17,9 @@ export function gitStatus(input) {
   }
 
   let branch = "";
+  // Did the input actually look like git status? Guards the "clean" fallback
+  // from firing on arbitrary text that was mis-routed here.
+  let sawGitShape = false;
   const stagedFiles = [];
   const modifiedFiles = [];
   const untrackedFiles = [];
@@ -30,13 +33,21 @@ export function gitStatus(input) {
 
     // Long-form branch detection (LLM usually sends this, not porcelain)
     const longBranch = raw.match(/^On branch (\S+)/);
-    if (longBranch) { branch = longBranch[1]; continue; }
+    if (longBranch) { branch = longBranch[1]; sawGitShape = true; continue; }
+
+    // Other unambiguous long-form git status markers (clean-tree case has no
+    // porcelain/file lines, so recognize them explicitly).
+    if (/^(nothing to commit|Changes (not staged|to be committed)|Untracked files:|Your branch )/.test(raw)) {
+      sawGitShape = true;
+      continue;
+    }
 
     // Porcelain branch header: "## main...origin/main"
-    if (raw.startsWith("##")) { branch = raw.replace(/^##\s*/, ""); continue; }
+    if (raw.startsWith("##")) { branch = raw.replace(/^##\s*/, ""); sawGitShape = true; continue; }
 
     // Porcelain status (2 chars + space + path)
-    if (raw.length >= 3 && /^[ MADRCU?!][ MADRCU?!] /.test(raw)) {
+    if (raw.length >= 3 && /^(?:[MADRCU?!][ MADRCU?!]|[ MADRCU?!][MADRCU?!]) /.test(raw)) {
+      sawGitShape = true;
       const x = raw[0];
       const y = raw[1];
       const file = raw.slice(3);
@@ -64,6 +75,7 @@ export function gitStatus(input) {
     // Long form fallback ("modified:   path", "new file:   path", ...)
     const longMatch = raw.match(/^\s*(modified|new file|deleted|renamed|both modified):\s+(.+)$/);
     if (longMatch) {
+      sawGitShape = true;
       const kind = longMatch[1];
       const path = longMatch[2].trim();
       if (kind === "both modified") { conflicts++; }
@@ -108,6 +120,9 @@ export function gitStatus(input) {
   }
 
   if (staged === 0 && modified === 0 && untracked === 0 && conflicts === 0) {
+    // Only claim a clean tree if the input really was git status; otherwise
+    // returning this would silently destroy unrelated (mis-routed) output.
+    if (!sawGitShape) return input;
     out += "clean — nothing to commit\n";
   }
 
