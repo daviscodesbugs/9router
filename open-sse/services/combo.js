@@ -6,6 +6,8 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { spliceRefusals } from "./refusalSplice.js";
+import { resolveRefusalConfig } from "./refusalJudge.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -277,7 +279,7 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, refusalFallback = undefined, clientFormat = null }) {
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -307,6 +309,19 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // Success (2xx) - return response
       if (result.ok) {
         log.info("COMBO", `Model ${modelStr} succeeded`);
+        if (refusalFallback?.enabled && clientFormat === "openai" && i < rotatedModels.length - 1) {
+          return spliceRefusals(result, {
+            body, modelStr, nextModel: rotatedModels[i + 1], hop: refusalFallback.hop ?? 0,
+            config: resolveRefusalConfig(refusalFallback), log, comboName,
+            next: () => handleComboChat({
+              body, models: rotatedModels.slice(i + 1), handleSingleModel, log, comboName,
+              comboStrategy: "fallback",      // never re-rotate round-robin state
+              autoSwitch: false,              // order already decided
+              clientFormat,
+              refusalFallback: { ...refusalFallback, hop: (refusalFallback.hop ?? 0) + 1 },
+            }),
+          });
+        }
         return result;
       }
 

@@ -21,6 +21,7 @@ import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActi
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
+import { isOpenAIChatRequest } from "open-sse/services/refusalSplice.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
@@ -135,7 +136,9 @@ export async function handleChat(request, clientRawRequest = null) {
       log,
       comboName: modelStr,
       comboStrategy,
-      comboStickyLimit
+      comboStickyLimit,
+      refusalFallback: comboStrategies[modelStr]?.refusalFallback,
+      clientFormat: request?.url && isOpenAIChatRequest(new URL(request.url).pathname, body) ? "openai" : null,
     });
   }
 
@@ -212,7 +215,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         log,
         comboName: modelStr,
         comboStrategy,
-        comboStickyLimit
+        comboStickyLimit,
+        refusalFallback: comboStrategies[modelStr]?.refusalFallback,
+        clientFormat: request?.url && isOpenAIChatRequest(new URL(request.url).pathname, body) ? "openai" : null,
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });

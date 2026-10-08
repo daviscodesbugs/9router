@@ -11,6 +11,12 @@ export function fallbackMarker(from, to) {
 export const EXHAUSTED_MARKER = "\n\n⟦9r:refusal-fallback-exhausted⟧\n\n";
 export const MARKER_RE = /⟦9r:refusal-fallback from=(?<from>[^ ⟧]+) to=(?<to>[^ ⟧]+)⟧/;
 
+// Spec deviation (see global-constraints): detectFormatByEndpoint returns null
+// for plain /v1/chat/completions, so we detect the OpenAI chat shape directly.
+export function isOpenAIChatRequest(pathname, body) {
+  return typeof pathname === "string" && pathname.includes("/chat/completions") && !Array.isArray(body?.input);
+}
+
 // ---- SSE frame helpers ---------------------------------------------------
 
 /** Parse one SSE frame's text (no trailing separator) into its data payload. */
