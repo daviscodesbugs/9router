@@ -263,6 +263,40 @@ describe("spliceRefusals streaming", () => {
     expect(out[0]).toEqual(reasoningFrame); // forwarded unchanged
   }, T);
 
+  it("judges content carried in the finish chunk", async () => {
+    let seen;
+    const combined = chunk("a1", "I can't help with that.", "stop");
+    const a = sse([combined]);
+    const res = await spliceRefusals(a, baseOpts({
+      judge: async (input) => { seen = input; return { decision: "keep", path: "jev" }; },
+    }));
+    await readAll(res);
+    expect(seen.assistantText).toBe("I can't help with that.");
+  }, T);
+
+  it("keep path still delivers content from a combined finish chunk", async () => {
+    const combined = chunk("a1", "I can't help with that.", "stop");
+    const a = sse([combined]);
+    const res = await spliceRefusals(a, baseOpts({ judge: async () => ({ decision: "keep", path: "jev" }) }));
+    const text = await readAll(res);
+    expect(contentsOf(text)).toEqual(["I can't help with that."]);
+    expect(framesOf(text)).toEqual([combined, "[DONE]"]);
+  }, T);
+
+  it("fallback drops a combined finish chunk", async () => {
+    const combined = chunk("a1", "I can't help with that.", "stop");
+    const a = sse([combined]);
+    const b = sse([chunk("b1", "Sure"), chunk("b1", null, "stop")]);
+    const res = await spliceRefusals(a, baseOpts({
+      judge: async () => ({ decision: "fallback", path: "jev" }),
+      next: async () => b,
+    }));
+    const text = await readAll(res);
+    // A's combined chunk is held → dropped; nothing before the marker
+    expect(contentsOf(text)).toEqual([fallbackMarker("cc/a", "cx/b"), "Sure"]);
+    expect(text).not.toContain("I can't help with that.");
+  }, T);
+
   it("judge throwing keeps the response", async () => {
     const a = sse([chunk("a1", "hello"), chunk("a1", null, "stop")]);
     const res = await spliceRefusals(a, baseOpts({

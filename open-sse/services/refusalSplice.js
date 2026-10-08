@@ -94,20 +94,15 @@ function streamSplice(response, opts) {
       if (f.parsed) {
         if (f.parsed.id != null) aId = f.parsed.id;
         if (f.parsed.created != null) aCreated = f.parsed.created;
-      }
-      if (isHeld(f)) {
-        if (f.parsed) {
-          const fr = f.parsed.choices?.[0]?.finish_reason;
-          if (fr != null) finishReason = fr;
-        }
-        held.push(raw);
-        return;
-      }
-      if (f.parsed) {
+        // Accumulate for the judge even on held (terminal) chunks: a provider
+        // may pack content+finish_reason into one chunk.
         const delta = f.parsed.choices?.[0]?.delta;
         if (delta?.content) accText += delta.content;
         if (delta?.tool_calls) hasToolCalls = true;
+        const fr = f.parsed.choices?.[0]?.finish_reason;
+        if (fr != null) finishReason = fr;
       }
+      if (isHeld(f)) { held.push(raw); return; }
       send(controller, raw + "\n\n");
     };
 
