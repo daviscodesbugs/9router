@@ -61,8 +61,68 @@ export async function spliceRefusals(response, opts) {
   const { config, hop } = opts;
   if (hop >= config.maxHops) return response;
   const ct = response.headers.get("content-type") || "";
-  if (!ct.includes("text/event-stream")) return response; // non-SSE: Task 5
+  if (!ct.includes("text/event-stream")) return jsonSplice(response, opts);
   return streamSplice(response, opts);
+}
+
+async function jsonSplice(response, opts) {
+  const {
+    body: reqBody, modelStr, nextModel, hop, config, log, comboName,
+    next, judge = judgeRefusal, logCheck = logRefusalCheck,
+  } = opts;
+
+  const aText = await response.text();
+
+  // parse; keep on failure
+  let parsed;
+  try { parsed = JSON.parse(aText); } catch {
+    return new Response(aText, { status: response.status, statusText: response.statusText, headers: response.headers });
+  }
+
+  const ch = parsed?.choices?.[0];
+  const msgContent = ch?.message?.content;
+  const assistantText = Array.isArray(msgContent)
+    ? msgContent.filter(p => p.type === "text").map(p => p.text).join("")
+    : (typeof msgContent === "string" ? msgContent : "");
+  const hasToolCalls = Array.isArray(ch?.message?.tool_calls) && ch.message.tool_calls.length > 0;
+  const finishReason = ch?.finish_reason ?? null;
+
+  const keep = () =>
+    new Response(aText, { status: response.status, statusText: response.statusText, headers: response.headers });
+
+  // judge (fail-soft)
+  let decision;
+  try {
+    const result = await judge(
+      { userRequest: lastUserText(reqBody), assistantText, finishReason, hasToolCalls },
+      config,
+    );
+    decision = result && result.decision ? result : { decision: "keep", path: "judge_error" };
+  } catch (err) {
+    log?.warn?.(TAG, "judge threw; keeping", { err: err?.message });
+    decision = { decision: "keep", path: "judge_error" };
+  }
+
+  const entry = {
+    combo: comboName, model: modelStr, hop,
+    path: decision.path, scores: decision.scores, jevMs: decision.jevMs,
+    decision: decision.decision, conversation: conversationFingerprint(reqBody),
+  };
+  if (decision.decision === "fallback") entry.to = nextModel;
+  try { logCheck(entry); } catch { /* never propagates */ }
+
+  if (decision.decision !== "fallback") return keep();
+
+  // fallback: call next()
+  let bRes = null;
+  try { bRes = await next(); } catch (err) {
+    log?.warn?.(TAG, "next() threw; keeping A", { err: err?.message });
+  }
+  if (!bRes || !bRes.ok) return keep();
+
+  const headers = new Headers(bRes.headers);
+  headers.set("x-9r-refusal-fallback", `${modelStr}->${nextModel}`);
+  return new Response(bRes.body, { status: bRes.status, statusText: bRes.statusText, headers });
 }
 
 function streamSplice(response, opts) {

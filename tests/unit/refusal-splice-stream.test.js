@@ -350,9 +350,11 @@ describe("spliceRefusals streaming", () => {
   }, T);
 
   it("non-SSE response is returned untouched", async () => {
-    const json = new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+    const body = { ok: true };
+    const json = new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
     const res = await spliceRefusals(json, baseOpts());
-    expect(res).toBe(json);
+    expect(JSON.parse(await res.text())).toEqual(body);
+    expect(res.status).toBe(200);
   }, T);
 
   it("keeps A's status and headers, drops content-length", async () => {
