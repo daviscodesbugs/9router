@@ -59,15 +59,6 @@ export function claudeToOpenAIResponse(chunk, state) {
       }
       if (block?.type === CLAUDE_BLOCK.TEXT) {
         state.textBlockStarted = true;
-      } else if (block?.type === CLAUDE_BLOCK.THINKING) {
-        // Track the thinking block internally only. Thinking text flows through
-        // reasoning_content (see thinking_delta below) — never inject literal
-        // <think>/</think> markers into content: they leak as visible text to
-        // any external OpenAI consumer (Claude Code / Zed via a downstream
-        // proxy render them verbatim) and displace the thinking block from
-        // first position when a downstream proxy rebuilds a Claude message.
-        state.inThinkingBlock = true;
-        state.currentBlockIndex = chunk.index;
       } else if (block?.type === CLAUDE_BLOCK.TOOL_USE) {
         const toolCallIndex = state.toolCallIndex++;
         // Restore original tool name from mapping (Claude OAuth)
@@ -94,6 +85,8 @@ export function claudeToOpenAIResponse(chunk, state) {
       if (delta?.type === "text_delta" && delta.text) {
         results.push(createChunk(state, { content: delta.text }));
       } else if (delta?.type === "thinking_delta" && delta.thinking) {
+        // Thinking travels only in reasoning_content. No "<think>" markers in
+        // content: OpenAI-format clients render them as literal text.
         results.push(createChunk(state, reasoningDelta(delta.thinking)));
       } else if (delta?.type === "input_json_delta" && delta.partial_json) {
         const toolCall = state.toolCalls.get(chunk.index);
@@ -116,13 +109,6 @@ export function claudeToOpenAIResponse(chunk, state) {
       if (chunk.index === state.serverToolBlockIndex) {
         state.serverToolBlockIndex = -1;
         break;
-      }
-      if (state.inThinkingBlock && chunk.index === state.currentBlockIndex) {
-        // End of thinking is signaled by state, not by a literal </think> text
-        // chunk (see content_block_start above). Consumers that need an explicit
-        // "reasoning ended" event (#454) detect the reasoning_content → content
-        // transition instead (see openai-responses.js).
-        state.inThinkingBlock = false;
       }
       state.textBlockStarted = false;
       state.thinkingBlockStarted = false;
@@ -157,6 +143,13 @@ export function claudeToOpenAIResponse(chunk, state) {
 
       if (chunk.delta?.stop_reason) {
         state.finishReason = convertStopReason(chunk.delta.stop_reason);
+        // A refusal produces no content blocks at all. Surface Anthropic's own
+        // explanation as the message text so the client shows *why* the turn is
+        // empty instead of a blank reply.
+        const refusalNote = chunk.delta.stop_reason === "refusal" && chunk.delta.stop_details?.explanation;
+        if (refusalNote) {
+          results.push(createChunk(state, { content: refusalNote }));
+        }
         const finalChunk = createChunk(state, {}, state.finishReason);
 
         if (state.usage) {
