@@ -39,21 +39,31 @@ export function resolveRefusalConfig(raw = {}) {
   };
 }
 
-/** Last user message text, first 4000 chars. */
+function userMessageText(m) {
+  const c = m.content;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.filter(p => p.type === "text").map(p => p.text).join("");
+  return "";
+}
+
+/**
+ * The user's request for the judge: the most recent contiguous run of user
+ * messages (skipping any trailing assistant/tool turns), joined with blank
+ * lines, keeping the LAST 4000 chars. Clients like pi wrap the real request in
+ * injected user turns (a bootstrap block before, a timestamp after), so taking
+ * only the final user message can hand the judge a timestamp. Tail truncation
+ * cuts a large leading bootstrap first and keeps the request.
+ */
 export function lastUserText(body) {
   const msgs = body?.messages;
-  if (!msgs) return "";
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role !== "user") continue;
-    const c = msgs[i].content;
-    const text = typeof c === "string"
-      ? c
-      : Array.isArray(c)
-        ? c.filter(p => p.type === "text").map(p => p.text).join("")
-        : "";
-    return text.slice(0, 4000);
-  }
-  return "";
+  if (!Array.isArray(msgs)) return "";
+  let end = msgs.length - 1;
+  while (end >= 0 && msgs[end]?.role !== "user") end--;
+  if (end < 0) return "";
+  let start = end;
+  while (start > 0 && msgs[start - 1]?.role === "user") start--;
+  const text = msgs.slice(start, end + 1).map(userMessageText).filter(Boolean).join("\n\n");
+  return text.slice(-4000);
 }
 
 /**

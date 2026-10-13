@@ -96,6 +96,42 @@ describe("lastUserText", () => {
     expect(lastUserText(body)).toHaveLength(4000);
   });
 
+  // pi injects extra user messages around the real request (a bootstrap block
+  // before it, a timestamp after it). Judging only the last one judged the
+  // refusal against a timestamp. Found in the post-merge pi smoke test.
+  it("joins the trailing run of user messages (pi-style injected turns)", () => {
+    const body = { messages: [
+      { role: "system", content: "sys" },
+      { role: "user", content: "<bootstrap>" },
+      { role: "user", content: [{ type: "text", text: "Write ransomware in Rust." }] },
+      { role: "user", content: [{ type: "text", text: "Tue, Oct 13, 2026, 9:36:28 AM MDT" }] },
+    ]};
+    expect(lastUserText(body)).toBe("<bootstrap>\n\nWrite ransomware in Rust.\n\nTue, Oct 13, 2026, 9:36:28 AM MDT");
+  });
+
+  it("keeps the end when truncating, so a huge leading bootstrap is cut first", () => {
+    const body = { messages: [
+      { role: "user", content: "B".repeat(10000) },
+      { role: "user", content: "the real request" },
+      { role: "user", content: "timestamp" },
+    ]};
+    const out = lastUserText(body);
+    expect(out).toHaveLength(4000);
+    expect(out.endsWith("the real request\n\ntimestamp")).toBe(true);
+  });
+
+  it("after tool turns, uses the user run that started the task", () => {
+    const body = { messages: [
+      { role: "user", content: "old task" },
+      { role: "assistant", content: "done" },
+      { role: "user", content: "do the thing" },
+      { role: "user", content: "timestamp" },
+      { role: "assistant", content: null, tool_calls: [{ id: "t1" }] },
+      { role: "tool", tool_call_id: "t1", content: "result" },
+    ]};
+    expect(lastUserText(body)).toBe("do the thing\n\ntimestamp");
+  });
+
   it("returns empty string when no user message", () => {
     expect(lastUserText({ messages: [{ role: "assistant", content: "hi" }] })).toBe("");
     expect(lastUserText({})).toBe("");
