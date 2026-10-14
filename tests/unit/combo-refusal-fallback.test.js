@@ -1,10 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 
 import { handleComboChat, getRotatedModels, resetComboRotation } from "../../open-sse/services/combo.js";
 import { isOpenAIChatRequest } from "../../open-sse/services/refusalSplice.js";
+
+import { askJev } from "../../open-sse/services/jev.js";
+vi.mock("../../open-sse/services/jev.js", () => ({ askJev: vi.fn() }));
 
 // ---- helpers -------------------------------------------------------------
 
@@ -41,6 +44,7 @@ const refusalCfg = (over = {}) => ({ enabled: true, ...over });
 
 let tmp;
 beforeEach(() => {
+  vi.clearAllMocks();
   resetComboRotation();
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "refusal-"));
   process.env.DATA_DIR = tmp;
@@ -120,22 +124,40 @@ describe("handleComboChat refusal fallback", () => {
     expect(out).toContain("C helps");
   });
 
-  it("round-robin rotation is not advanced by the retry", async () => {
-    const models = ["p/a", "p/b"];
-    const handleSingleModel = (b, m) =>
-      Promise.resolve(m === "p/a" ? sse("refuse", "content_filter") : sse("B helps"));
+  it.each([
+    ["fallback", undefined],
+    ["fallback", { enabled: false }],
+    ["round-robin", { enabled: true }],
+    ["fusion", { enabled: true }],
+  ])("%s with config %j never calls Jev", async (comboStrategy, refusalFallback) => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    try {
+      const response = sse("A reply");
+      const res = await handleComboChat({
+        body: { messages: [{ role: "user", content: "hi" }] },
+        models: ["p/a", "p/b"], handleSingleModel: async () => response,
+        log, comboName: "gated", comboStrategy, clientFormat: "openai", refusalFallback,
+      });
+      expect(res).toBe(response);
+      await readAll(res);
+      expect(askJev).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
 
-    // First request: A refuses, splices B.
-    const res = await handleComboChat({
-      body: { messages: [{ role: "user", content: "hi" }] },
-      models, handleSingleModel, log, comboName: "rr",
-      comboStrategy: "round-robin", clientFormat: "openai", refusalFallback: refusalCfg(),
-    });
-    await readAll(res);
-
-    // The combo-level rotation counter should have advanced exactly once (A→next starts at B),
-    // i.e. the refusal retry did NOT consume an extra rotation slot.
-    expect(getRotatedModels(models, "rr", "round-robin")[0]).toBe("p/b");
+  it("checked fallback calls Jev and retries", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    askJev.mockResolvedValue({ answers: {
+      refusal: { noul: 0.99 }, partial: { noul: 0 }, protective: { noul: 0 },
+    }, ms: 1 });
+    try {
+      const res = await handleComboChat({
+        body: { messages: [{ role: "user", content: "hi" }] },
+        models: ["p/a", "p/b"], handleSingleModel: async (_, model) => sse(model === "p/a" ? "Declined" : "B helps"),
+        log, comboName: "checked", comboStrategy: "fallback", clientFormat: "openai", refusalFallback: refusalCfg(),
+      });
+      expect(await readAll(res)).toContain("B helps");
+      expect(askJev).toHaveBeenCalledTimes(1);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("hop limit stops a refusal chain", async () => {

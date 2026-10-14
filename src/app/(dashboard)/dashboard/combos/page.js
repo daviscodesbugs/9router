@@ -59,6 +59,7 @@ export default function CombosPage() {
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
+  const [defaultStrategy, setDefaultStrategy] = useState("fallback");
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
@@ -170,6 +171,7 @@ export default function CombosPage() {
         setActiveProviders(providersData.connections || []);
       }
       setComboStrategies(settingsData.comboStrategies || {});
+      setDefaultStrategy(settingsData.comboStrategy || "fallback");
       const rawAdapter = settingsData.capacityAdapter || {};
       const normalized = {};
       for (const cap of CAPACITY_ADAPTER_CAPS) {
@@ -241,11 +243,12 @@ export default function CombosPage() {
   };
 
   const persistComboStrategies = async (updated) => {
-    await fetch("/api/settings", {
+    const response = await fetch("/api/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ comboStrategies: updated }),
     });
+    if (!response.ok) throw new Error(`Failed to save combo settings (HTTP ${response.status})`);
     setComboStrategies(updated);
   };
 
@@ -308,22 +311,16 @@ export default function CombosPage() {
     });
   };
 
-  // Merge a per-combo strategy patch into settings.comboStrategies. Passing an empty
-  // patch (strategy back to default "fallback") drops the entry entirely.
+  // Keep explicit fallback and its optional settings (including refusal detection).
   const handleSetComboStrategy = async (comboName, patch) => {
     try {
       const updated = { ...comboStrategies };
-      const next = { ...(updated[comboName] || {}), ...patch };
-      // Prune to keep settings clean: default fallback with no extras = no entry.
-      if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
-        delete updated[comboName];
-      } else {
-        updated[comboName] = next;
-      }
+      updated[comboName] = { ...(updated[comboName] || {}), ...patch };
 
       await persistComboStrategies(updated);
     } catch (error) {
       console.log("Error updating combo strategy:", error);
+      alert("Failed to save combo settings. Your change was not applied.");
     }
   };
 
@@ -333,14 +330,10 @@ export default function CombosPage() {
     try {
       const updated = { ...comboStrategies };
       for (const combo of selectedCombos) {
-        if (!strategy || strategy === "fallback") {
-          delete updated[combo.name];
-        } else {
-          updated[combo.name] = {
-            ...(updated[combo.name] || {}),
-            fallbackStrategy: strategy,
-          };
-        }
+        updated[combo.name] = {
+          ...(updated[combo.name] || {}),
+          fallbackStrategy: strategy,
+        };
       }
       await persistComboStrategies(updated);
     } catch (error) {
@@ -498,7 +491,7 @@ export default function CombosPage() {
                   onCopy={copy}
                   onEdit={() => setEditingCombo(combo)}
                   onDelete={() => handleDelete(combo.id)}
-                  strategy={comboStrategies[combo.name] || {}}
+                  strategy={{ fallbackStrategy: defaultStrategy, ...comboStrategies[combo.name] }}
                   onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
                   selected={selectedIds.includes(combo.id)}
                   onToggleSelect={() => toggleSelect(combo.id)}
@@ -654,6 +647,19 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
               onChange={(e) => onSetStrategy({ fallbackStrategy: e.target.value })}
               selectClassName="py-1.5 text-xs"
             />
+            {current === "fallback" && (
+              <label className="mt-2 flex items-center gap-2 text-xs text-text-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={strategy.refusalFallback?.enabled === true}
+                  onChange={(e) => onSetStrategy({
+                    fallbackStrategy: "fallback",
+                    refusalFallback: { ...strategy.refusalFallback, enabled: e.target.checked },
+                  })}
+                />
+                Fallback on refusals
+              </label>
+            )}
           </div>
 
           <div className="grid grid-cols-3 gap-1 sm:flex">

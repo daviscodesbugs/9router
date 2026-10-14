@@ -309,7 +309,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // Success (2xx) - return response
       if (result.ok) {
         log.info("COMBO", `Model ${modelStr} succeeded`);
-        if (refusalFallback?.enabled && clientFormat === "openai" && i < rotatedModels.length - 1) {
+        if ((comboStrategy || "fallback") === "fallback" && refusalFallback?.enabled === true && clientFormat === "openai" && i < rotatedModels.length - 1) {
           return spliceRefusals(result, {
             body, modelStr, nextModel: rotatedModels[i + 1], hop: refusalFallback.hop ?? 0,
             config: resolveRefusalConfig(refusalFallback), log, comboName,
