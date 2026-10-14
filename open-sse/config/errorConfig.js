@@ -76,6 +76,23 @@ export const ERROR_RULES = [
   { status: 429, backoff: true },
 ];
 
+/**
+ * Soft-failure rules: a 2xx response that is technically "successful" but
+ * carries no usable content (e.g. the provider refused via
+ * finish_reason:"content_filter"). The combo executor consults these ONLY
+ * when soft-failover is enabled, to decide whether to fall through to the
+ * next model instead of returning the empty success as-is.
+ *
+ * Each rule: { finishReason?, text? }
+ *   - finishReason: exact match against an aggregated choices[].finish_reason
+ *   - text: case-insensitive substring match against the raw response body
+ * Kept intentionally small; expand as new soft-failure shapes surface.
+ */
+export const SOFT_FAILURE_RULES = [
+  { finishReason: "content_filter" },
+  { text: "\"finish_reason\":\"content_filter\"" },
+];
+
 // Backward compat: COOLDOWN_MS object (used by index.js re-export)
 export const COOLDOWN_MS = {
   unauthorized: COOLDOWN.long,

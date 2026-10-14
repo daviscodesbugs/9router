@@ -50,6 +50,9 @@ const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
   { value: "fusion", label: "Fusion — panel + judge" },
+  { value: "triage", label: "Triage — Jev-scored routing" },
+  { value: "capability", label: "Capability — best-fit by strength" },
+  { value: "cost-perf", label: "Cost/Performance — best fit per dollar" },
 ];
 
 export default function CombosPage() {
@@ -60,6 +63,7 @@ export default function CombosPage() {
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
   const [defaultStrategy, setDefaultStrategy] = useState("fallback");
+  const [modelProfiles, setModelProfiles] = useState({});
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
@@ -172,6 +176,7 @@ export default function CombosPage() {
       }
       setComboStrategies(settingsData.comboStrategies || {});
       setDefaultStrategy(settingsData.comboStrategy || "fallback");
+      setModelProfiles(settingsData.modelProfiles || {});
       const rawAdapter = settingsData.capacityAdapter || {};
       const normalized = {};
       for (const cap of CAPACITY_ADAPTER_CAPS) {
@@ -195,6 +200,24 @@ export default function CombosPage() {
       });
     } catch (error) {
       console.log("Error updating capacity adapter:", error);
+    }
+  };
+
+  // Model profiles are per-MODEL (not per-combo): editing one description updates it
+  // everywhere that model appears. Empty string prunes the entry.
+  const handleSetModelProfile = async (modelId, desc) => {
+    const updated = { ...modelProfiles };
+    if (desc && desc.trim()) updated[modelId] = desc.trim();
+    else delete updated[modelId];
+    setModelProfiles(updated);
+    try {
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelProfiles: updated }),
+      });
+    } catch (error) {
+      console.log("Error updating model profiles:", error);
     }
   };
 
@@ -495,6 +518,8 @@ export default function CombosPage() {
                   onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
                   selected={selectedIds.includes(combo.id)}
                   onToggleSelect={() => toggleSelect(combo.id)}
+                  modelProfiles={modelProfiles}
+                  onSetModelProfile={handleSetModelProfile}
                 />
               ));
             })()}
@@ -556,11 +581,13 @@ const fmtK = (n) => {
   return `${Math.round(n / 1000)}k`;
 };
 
-function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
+function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect, modelProfiles = {}, onSetModelProfile }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
   const isFusion = current === "fusion";
+  const isCostPerf = current === "cost-perf";
+  const isCapability = current === "capability" || isCostPerf; // both route by model profiles
   // The synced catalog is server-only, so resolving here would fall back to the
   // generic patterns and under-report the limits. getCaps carries the server's
   // answer for /api/models.
@@ -609,6 +636,38 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
                 <span>ctx {fmtK(comboCaps.contextWindow)}</span>
                 <span className="opacity-40">·</span>
                 <span>max {fmtK(comboCaps.maxOutput)}</span>
+              </div>
+            )}
+            {/* Capability: one description per member model (shared via modelProfiles) */}
+            {isCapability && (
+              <div className="mt-2 flex flex-col gap-1.5">
+                <span className="text-[11px] font-medium text-text-muted">Model strengths — Jev routes by best fit</span>
+                {combo.models.map((m) => (
+                  <div key={m} className="flex items-start gap-2">
+                    <code className="shrink-0 pt-1 font-mono text-[11px] text-text-muted">{m}</code>
+                    <textarea
+                      rows={2}
+                      defaultValue={modelProfiles[m] || ""}
+                      placeholder="Best at: … (e.g. code edits, extraction). Weak at: …"
+                      onBlur={(e) => { if ((e.target.value || "") !== (modelProfiles[m] || "")) onSetModelProfile?.(m, e.target.value); }}
+                      className="flex-1 resize-y rounded border border-black/10 bg-transparent px-2 py-1 font-mono text-[11px] leading-snug placeholder:text-text-muted/50 focus:border-primary focus:outline-none dark:border-white/10"
+                    />
+                  </div>
+                ))}
+                <span className="text-[10px] text-text-muted/70">Descriptions are per-model — shared across every combo that includes them.</span>
+                {isCostPerf && (
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-[11px] font-medium text-text-muted">Cost sensitivity (λ)</span>
+                    <input
+                      type="range" min="0" max="2" step="0.1"
+                      defaultValue={strategy.costLambda ?? 1}
+                      onChange={(e) => onSetStrategy({ costLambda: parseFloat(e.target.value) })}
+                      className="flex-1 accent-primary"
+                    />
+                    <code className="font-mono text-[11px] text-primary">{(strategy.costLambda ?? 1).toFixed(1)}</code>
+                    <span className="text-[10px] text-text-muted/70">0 = ignore price · 1 = balanced · 2 = cheap-first</span>
+                  </div>
+                )}
               </div>
             )}
             {/* Fusion: judge picker (Auto = first model) */}

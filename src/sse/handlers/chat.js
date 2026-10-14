@@ -17,6 +17,14 @@ import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { upstreamResponseHeaders } from "open-sse/utils/upstreamHeaders.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
+import { handleTriageChat, handleCapabilityChat, handleCostPerfChat } from "open-sse/services/triage.js";
+import { getPricingForModel } from "open-sse/providers/pricing.js";
+
+// Combo entry "provider/model" → output $/Mtok (0 if free/unknown). Used by cost-perf.
+const priceOf = (id) => {
+  const [prov, ...rest] = String(id).split("/");
+  return getPricingForModel(prov, rest.join("/"))?.output || 0;
+};
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -109,6 +117,8 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    // Soft-failover (opt-in): treat empty 2xx (e.g. content_filter) as failover.
+    const comboSoftFailover = comboStrategies[modelStr]?.softFailover ?? settings.comboSoftFailover ?? false;
     const augmentedModels = await filterAdapterModels(keyAccess, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings), comboModels);
     const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
@@ -132,6 +142,59 @@ export async function handleChat(request, clientRawRequest = null) {
       });
     }
 
+    if (comboStrategy === "triage") {
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: triage)`);
+      return handleTriageChat({
+        body,
+        models: augmentedModels,
+        handleComboChat,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          adapterAdded
+        ),
+        log,
+        comboName: modelStr,
+        comboStickyLimit: settings.comboStickyRoundRobinLimit,
+        tuning: comboStrategies[modelStr]?.triageTuning,
+      });
+    }
+
+    if (comboStrategy === "capability") {
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: capability)`);
+      return handleCapabilityChat({
+        body,
+        models: augmentedModels,
+        profiles: settings.modelProfiles || {},
+        handleComboChat,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          adapterAdded
+        ),
+        log,
+        comboName: modelStr,
+        comboStickyLimit: settings.comboStickyRoundRobinLimit,
+      });
+    }
+
+    if (comboStrategy === "cost-perf") {
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: cost-perf)`);
+      return handleCostPerfChat({
+        body,
+        models: augmentedModels,
+        profiles: settings.modelProfiles || {},
+        getPrice: priceOf,
+        lambda: comboStrategies[modelStr]?.costLambda ?? 1,
+        handleComboChat,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          adapterAdded
+        ),
+        log,
+        comboName: modelStr,
+        comboStickyLimit: settings.comboStickyRoundRobinLimit,
+      });
+    }
+
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
@@ -147,6 +210,7 @@ export async function handleChat(request, clientRawRequest = null) {
       comboStickyLimit,
       refusalFallback: comboStrategies[modelStr]?.refusalFallback,
       clientFormat: request?.url && isOpenAIChatRequest(new URL(request.url).pathname, body) ? "openai" : null,
+      softFailover: comboSoftFailover
     });
   }
 
@@ -214,6 +278,59 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         });
       }
 
+      if (comboStrategy === "triage") {
+        log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: triage)`);
+        return handleTriageChat({
+          body,
+          models: augmentedModels,
+          handleComboChat,
+          handleSingleModel: withCapacityAdapterStripping(
+            (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+            adapterAdded
+          ),
+          log,
+          comboName: modelStr,
+          comboStickyLimit: chatSettings.comboStickyRoundRobinLimit,
+          tuning: comboStrategies[modelStr]?.triageTuning,
+        });
+      }
+
+      if (comboStrategy === "capability") {
+        log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: capability)`);
+        return handleCapabilityChat({
+          body,
+          models: augmentedModels,
+          profiles: chatSettings.modelProfiles || {},
+          handleComboChat,
+          handleSingleModel: withCapacityAdapterStripping(
+            (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+            adapterAdded
+          ),
+          log,
+          comboName: modelStr,
+          comboStickyLimit: chatSettings.comboStickyRoundRobinLimit,
+        });
+      }
+
+      if (comboStrategy === "cost-perf") {
+        log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: cost-perf)`);
+        return handleCostPerfChat({
+          body,
+          models: augmentedModels,
+          profiles: chatSettings.modelProfiles || {},
+          getPrice: priceOf,
+          lambda: comboStrategies[modelStr]?.costLambda ?? 1,
+          handleComboChat,
+          handleSingleModel: withCapacityAdapterStripping(
+            (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+            adapterAdded
+          ),
+          log,
+          comboName: modelStr,
+          comboStickyLimit: chatSettings.comboStickyRoundRobinLimit,
+        });
+      }
+
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
       log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
@@ -229,6 +346,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         comboStickyLimit,
         refusalFallback: comboStrategies[modelStr]?.refusalFallback,
         clientFormat: request?.url && isOpenAIChatRequest(new URL(request.url).pathname, body) ? "openai" : null,
+        softFailover: comboSoftFailover
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
