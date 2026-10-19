@@ -3,7 +3,6 @@
  */
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
-import { detectSoftFailure } from "./softFailure.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
@@ -320,7 +319,7 @@ export function isZeroContentResponse(data) {
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, refusalFallback = undefined, clientFormat = null, softFailover = false }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, refusalFallback = undefined, clientFormat = null }) {
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -367,20 +366,6 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
           }
         }
 
-        // Soft-failover (opt-in): a 2xx can still be an empty non-answer, e.g.
-        // finish_reason:"content_filter". Peek the body; if it's a soft
-        // failure and another model remains, fall through instead of returning
-        // the empty success. Buffering the body defeats live streaming, so this
-        // only runs when explicitly enabled (background/evaluator calls).
-        if (softFailover && i < rotatedModels.length - 1) {
-          const { soft, reason } = await detectSoftFailure(result);
-          if (soft) {
-            lastError = `soft failure (${reason})`;
-            if (!lastStatus) lastStatus = result.status;
-            log.warn("COMBO", `Model ${modelStr} soft-failed, trying next`, { reason });
-            continue;
-          }
-        }
 
         log.info("COMBO", `Model ${modelStr} succeeded`);
         if ((comboStrategy || "fallback") === "fallback" && refusalFallback?.enabled === true && clientFormat === "openai" && i < rotatedModels.length - 1) {

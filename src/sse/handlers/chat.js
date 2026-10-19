@@ -117,8 +117,6 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    // Soft-failover (opt-in): treat empty 2xx (e.g. content_filter) as failover.
-    const comboSoftFailover = comboStrategies[modelStr]?.softFailover ?? settings.comboSoftFailover ?? false;
     const augmentedModels = await filterAdapterModels(keyAccess, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings), comboModels);
     const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
@@ -210,7 +208,6 @@ export async function handleChat(request, clientRawRequest = null) {
       comboStickyLimit,
       refusalFallback: comboStrategies[modelStr]?.refusalFallback,
       clientFormat: request?.url && isOpenAIChatRequest(new URL(request.url).pathname, body) ? "openai" : null,
-      softFailover: comboSoftFailover
     });
   }
 
@@ -346,7 +343,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         comboStickyLimit,
         refusalFallback: comboStrategies[modelStr]?.refusalFallback,
         clientFormat: request?.url && isOpenAIChatRequest(new URL(request.url).pathname, body) ? "openai" : null,
-        softFailover: comboSoftFailover
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
